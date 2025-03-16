@@ -33,7 +33,7 @@ const limiter = rateLimit({
 
 // Middleware
 app.use(cors({
-    origin: 'http://localhost:5173', // Allow requests from Vite dev server
+    origin: 'http://localhost:3000', // Allow requests from Vite dev server
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
