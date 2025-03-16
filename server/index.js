@@ -6,6 +6,7 @@ import { Groq } from 'groq-sdk';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
+import { OAuth2Client } from 'google-auth-library';
 
 dotenv.config();
 
@@ -26,14 +27,12 @@ const limiter = rateLimit({
     max: 100, // limit each IP to 100 requests per windowMs
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => {
-        return req.ip || req.headers['x-forwarded-for'] || 'default-key';
-    }
+    keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] || 'default-key',
 });
 
 // Middleware
 app.use(cors({
-    origin: 'http://localhost:3000', // Allow requests from Vite dev server
+    origin: 'http://localhost:5173', // Allow requests from Vite dev server
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -44,9 +43,7 @@ app.use(limiter);
 const storage = multer.memoryStorage();
 const upload = multer({
     storage: storage,
-    limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
-    },
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
     fileFilter: (req, file, cb) => {
         if (!file.mimetype.startsWith('image/')) {
             return cb(new Error('Only image files are allowed!'));
@@ -55,13 +52,10 @@ const upload = multer({
     }
 });
 
-// MongoDB connection with proper error handling
+// MongoDB connection
 const connectDB = async () => {
     try {
-        if (!process.env.MONGODB_URI) {
-            throw new Error('MONGODB_URI is not defined in environment variables');
-        }
-
+        if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not defined in environment variables');
         await mongoose.connect(process.env.MONGODB_URI, {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
@@ -69,15 +63,42 @@ const connectDB = async () => {
         console.log('Connected to MongoDB');
     } catch (err) {
         console.error('MongoDB connection error:', err);
-        // Don't exit the process, just log the error
         console.error('Continuing without database connection...');
     }
 };
-
 connectDB();
+
+// Authentication Middleware (Google ID Token Verification)
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+const verifyGoogleToken = async (req, res, next) => {
+    try {
+        const token = req.headers['authorization']?.split(' ')[1]; // Extract Bearer token
+        if (!token) return res.status(401).json({ message: 'Unauthorized: No token provided' });
+
+        const ticket = await client.verifyIdToken({
+            idToken: token,
+            audience: process.env.GOOGLE_CLIENT_ID, // Must match frontend Client ID
+        });
+
+        const payload = ticket.getPayload();
+        req.user = {
+            userId: payload.sub,  // Google User ID
+            email: payload.email,
+            name: payload.name,
+            picture: payload.picture
+        };
+
+        next(); // Proceed to next middleware
+    } catch (error) {
+        console.error('Google Token Verification Failed:', error);
+        return res.status(403).json({ message: 'Invalid or expired token' });
+    }
+};
 
 // Report Schema
 const reportSchema = new mongoose.Schema({
+    userId: String,  // Link reports to authenticated users
     originalText: String,
     summary: String,
     analysis: {
@@ -91,37 +112,21 @@ const reportSchema = new mongoose.Schema({
 
 const Report = mongoose.model('Report', reportSchema);
 
-// Process report endpoint
-app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
+// Process report endpoint (Requires Authentication)
+app.post('/api/analyze-report', verifyGoogleToken, upload.single('report'), async (req, res) => {
     try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
         // Initialize Tesseract worker
         const worker = await createWorker();
-
-        // Extract text from image
         const { data: { text } } = await worker.recognize(req.file.buffer);
         await worker.terminate();
 
         // Generate analysis using Groq
         const completion = await groq.chat.completions.create({
             messages: [
-                {
-                    role: "system",
-                    content: "You are a medical expert AI assistant specialized in analyzing medical reports and explaining them in simple terms. Focus on providing clear, actionable insights and highlighting any concerning findings."
-                },
-                {
-                    role: "user",
-                    content: `Please analyze this medical report and provide a structured response with the following sections:
-          1. Key Findings (bullet points)
-          2. Recommendations (bullet points)
-          3. Urgent Concerns (if any)
-          4. Simplified Explanation (in layman's terms)
-          
-          Here's the report text: ${text}`
-                }
+                { role: "system", content: "You are a medical expert AI assistant specialized in analyzing medical reports and explaining them in simple terms." },
+                { role: "user", content: `Analyze this report:\n\n${text}` }
             ],
             model: "mixtral-8x7b-32768",
             temperature: 0.5,
@@ -130,7 +135,7 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
 
         const analysis = completion.choices[0]?.message?.content;
 
-        // Parse the structured response
+        // Parse structured response
         const sections = analysis.split('\n\n');
         const parsedAnalysis = {
             keyFindings: sections[0]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
@@ -142,6 +147,7 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
         // Save to database
         try {
             const report = new Report({
+                userId: req.user.userId, // Store user ID
                 originalText: text,
                 summary: analysis,
                 analysis: parsedAnalysis
@@ -149,7 +155,6 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
             await report.save();
         } catch (dbError) {
             console.error('Database save error:', dbError);
-            // Continue without saving to database
         }
 
         res.json({
@@ -160,17 +165,14 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
 
     } catch (error) {
         console.error('Error processing report:', error);
-        res.status(500).json({
-            error: 'Error processing report',
-            details: error.message
-        });
+        res.status(500).json({ error: 'Error processing report', details: error.message });
     }
 });
 
-// Get report history
-app.get('/api/reports', async (req, res) => {
+// Get report history (Requires Authentication)
+app.get('/api/reports', verifyGoogleToken, async (req, res) => {
     try {
-        const reports = await Report.find().sort({ createdAt: -1 }).limit(10);
+        const reports = await Report.find({ userId: req.user.userId }).sort({ createdAt: -1 }).limit(10);
         res.json(reports);
     } catch (error) {
         res.status(500).json({ error: 'Error fetching reports' });
@@ -180,10 +182,7 @@ app.get('/api/reports', async (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);
-    res.status(500).json({
-        error: 'Something went wrong!',
-        details: err.message
-    });
+    res.status(500).json({ error: 'Something went wrong!', details: err.message });
 });
 
 app.listen(PORT, () => {
