@@ -186,6 +186,8 @@ app.post('/api/chat', async (req, res) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
+        console.log(`Received message for chatbot: ${message}`);  // Added log for debugging
+
         const completion = await groq.chat.completions.create({
             messages: [
                 {
