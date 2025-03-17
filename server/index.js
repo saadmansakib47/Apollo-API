@@ -1,4 +1,4 @@
-import express from 'express';
+ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { createWorker } from 'tesseract.js';
@@ -114,13 +114,13 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
                 },
                 {
                     role: "user",
-                    content: `Please analyze this medical report and provide a structured response with the following sections:
-          1. Key Findings (bullet points)
-          2. Recommendations (bullet points)
-          3. Urgent Concerns (if any)
-          4. Simplified Explanation (in layman's terms)
-          
-          Here's the report text: ${text}`
+                    content: Please analyze this medical report and provide a structured response with the following sections:
+           1. Key Findings (bullet points)
+           2. Recommendations (bullet points)
+           3. Urgent Concerns (if any)
+           4. Simplified Explanation (in layman's terms)
+           
+           Here's the report text: ${text}
                 }
             ],
             model: "mixtral-8x7b-32768",
@@ -177,6 +177,47 @@ app.get('/api/reports', async (req, res) => {
     }
 });
 
+// Chatbot endpoint for health-related queries
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message } = req.body;
+        
+        if (!message) {
+            return res.status(400).json({ error: 'Message is required' });
+        }
+
+        const completion = await groq.chat.completions.create({
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a medical expert AI assistant specialized in explaining frequently used medical terms in layman's terms to the user. You should provide clear, accurate, and easy-to-understand explanations while maintaining medical accuracy. If the query is not health-related, politely inform the user that you can only assist with health-related questions."
+                },
+                {
+                    role: "user",
+                    content: message
+                }
+            ],
+            model: "mixtral-8x7b-32768",
+            temperature: 0.7,
+            max_tokens: 1024,
+        });
+
+        const response = completion.choices[0]?.message?.content;
+
+        res.json({
+            success: true,
+            response
+        });
+
+    } catch (error) {
+        console.error('Error in chatbot:', error);
+        res.status(500).json({
+            error: 'Error processing chat message',
+            details: error.message
+        });
+    }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);
@@ -187,5 +228,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(Server running on port ${PORT});
 });
