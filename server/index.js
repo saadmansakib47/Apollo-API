@@ -33,7 +33,7 @@ const limiter = rateLimit({
 
 // Middleware
 app.use(cors({
-    origin: 'http://localhost:5173', // Allow requests from Vite dev server
+    origin: 'http://localhost:3000', // Allow requests from Vite dev server
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -114,13 +114,13 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
                 },
                 {
                     role: "user",
-                    content: Please analyze this medical report and provide a structured response with the following sections:
+                    content: `Please analyze this medical report and provide a structured response with the following sections:
           1. Key Findings (bullet points)
           2. Recommendations (bullet points)
           3. Urgent Concerns (if any)
           4. Simplified Explanation (in layman's terms)
           
-          Here's the report text: ${text}
+          Here's the report text: ${text}`
                 }
             ],
             model: "mixtral-8x7b-32768",
@@ -187,5 +187,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-    console.log(Server running on port ${PORT});
+    console.log(`Server running on port ${PORT}`);
 });
