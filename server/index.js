@@ -177,6 +177,47 @@ app.get('/api/reports', async (req, res) => {
     }
 });
 
+// Chatbot endpoint for health-related queries
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message } = req.body;
+        
+        if (!message) {
+            return res.status(400).json({ error: 'Message is required' });
+        }
+
+        const completion = await groq.chat.completions.create({
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a medical expert AI assistant specialized in explaining frequently used medical terms in layman's terms to the user. You should provide clear, accurate, and easy-to-understand explanations while maintaining medical accuracy. If the query is not health-related, politely inform the user that you can only assist with health-related questions."
+                },
+                {
+                    role: "user",
+                    content: message
+                }
+            ],
+            model: "mixtral-8x7b-32768",
+            temperature: 0.7,
+            max_tokens: 1024,
+        });
+
+        const response = completion.choices[0]?.message?.content;
+
+        res.json({
+            success: true,
+            response
+        });
+
+    } catch (error) {
+        console.error('Error in chatbot:', error);
+        res.status(500).json({
+            error: 'Error processing chat message',
+            details: error.message
+        });
+    }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);
