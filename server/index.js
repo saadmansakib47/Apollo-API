@@ -81,64 +81,10 @@ const reportSchema = new mongoose.Schema({
     originalText: String,
     summary: String,
     analysis: {
-        numericalData: {
-            metrics: [{
-                name: String,
-                value: String,
-                unit: String,
-                normalRange: String,
-                status: {
-                    type: String,
-                    enum: ['normal', 'warning', 'critical']
-                },
-                trend: {
-                    type: String,
-                    enum: ['increasing', 'decreasing', 'stable']
-                }
-            }],
-            suggestedVisualizations: [{
-                type: {
-                    type: String,
-                    enum: ['graph', 'chart', 'gauge']
-                },
-                title: String,
-                description: String
-            }]
-        },
-        keyFindings: [{
-            finding: String,
-            severity: {
-                type: String,
-                enum: ['normal', 'warning', 'critical']
-            },
-            category: String,
-            explanation: String
-        }],
-        recommendations: [{
-            recommendation: String,
-            priority: {
-                type: String,
-                enum: ['high', 'medium', 'low']
-            },
-            timeframe: {
-                type: String,
-                enum: ['immediate', 'short-term', 'long-term']
-            },
-            rationale: String
-        }],
-        urgentConcerns: [{
-            concern: String,
-            action: String,
-            impact: String
-        }],
-        simplifiedSummary: {
-            mainPoints: [String],
-            nextSteps: [String],
-            medicalTerms: [{
-                term: String,
-                definition: String
-            }]
-        }
+        keyFindings: [String],
+        recommendations: [String],
+        urgentConcerns: [String],
+        simplifiedExplanation: String
     },
     createdAt: { type: Date, default: Date.now }
 });
@@ -148,249 +94,52 @@ const Report = mongoose.model('Report', reportSchema);
 // Process report endpoint
 app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
     try {
-        // Validate file upload
         if (!req.file) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'No file uploaded' 
-            });
+            return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        console.log('File received:', {
-            filename: req.file.originalname,
-            size: req.file.size,
-            mimetype: req.file.mimetype
+        // Initialize Tesseract worker
+        const worker = await createWorker();
+
+        // Extract text from image
+        const { data: { text } } = await worker.recognize(req.file.buffer);
+        await worker.terminate();
+
+        // Generate analysis using Groq
+        const completion = await groq.chat.completions.create({
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a medical expert AI assistant specialized in analyzing medical reports and explaining them in simple terms. Focus on providing clear, actionable insights and highlighting any concerning findings."
+                },
+                {
+                    role: "user",
+                    content: `Please analyze this medical report and provide a structured response with the following sections:
+          1. Key Findings (bullet points)
+          2. Recommendations (bullet points)
+          3. Urgent Concerns (if any)
+          4. Simplified Explanation (in layman's terms)
+          
+          Here's the report text: ${text}`
+                }
+            ],
+            model: "mixtral-8x7b-32768",
+            temperature: 0.5,
+            max_tokens: 1024,
         });
 
-        // Initialize Tesseract worker with error handling
-        let worker;
-        try {
-            worker = await createWorker();
-            console.log('Tesseract worker initialized');
-        } catch (tesseractError) {
-            console.error('Tesseract initialization error:', tesseractError);
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to initialize text recognition',
-                details: tesseractError.message
-            });
-        }
+        const analysis = completion.choices[0]?.message?.content;
 
-        // Extract text from image with error handling
-        let text;
-        try {
-            const result = await worker.recognize(req.file.buffer);
-            text = result.data.text;
-            console.log('Text extracted successfully, length:', text.length);
-            await worker.terminate();
-        } catch (ocrError) {
-            console.error('OCR processing error:', ocrError);
-            await worker.terminate();
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to process image',
-                details: ocrError.message
-            });
-        }
+        // Parse the structured response
+        const sections = analysis.split('\n\n');
+        const parsedAnalysis = {
+            keyFindings: sections[0]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
+            recommendations: sections[1]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
+            urgentConcerns: sections[2]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
+            simplifiedExplanation: sections[3]
+        };
 
-        if (!text || text.trim().length === 0) {
-            return res.status(400).json({
-                success: false,
-                error: 'No text could be extracted from the image'
-            });
-        }
-
-        // Generate analysis using Groq with error handling
-        let analysis;
-        try {
-            const completion = await groq.chat.completions.create({
-                messages: [
-                    {
-                        role: "system",
-                        content: `You are a medical expert AI assistant that MUST respond with valid JSON. Your task is to analyze medical reports and present them in a structured format.
-
-Key requirements:
-1. ALWAYS respond with properly formatted JSON
-2. Use the exact structure provided in the example
-3. Do not include any text outside the JSON structure
-4. Ensure all JSON values are properly quoted
-5. Keep responses concise to avoid token limits`
-                    },
-                    {
-                        role: "user",
-                        content: `Analyze this medical report and respond ONLY with a JSON object in this exact structure:
-
-{
-    "numericalData": {
-        "metrics": [],
-        "suggestedVisualizations": []
-    },
-    "keyFindings": [],
-    "recommendations": [],
-    "urgentConcerns": [],
-    "simplifiedSummary": {
-        "mainPoints": [],
-        "nextSteps": [],
-        "medicalTerms": []
-    }
-}
-
-If no data is found for a section, keep it as an empty array. Here's the report text: ${text}`
-                    }
-                ],
-                model: "mixtral-8x7b-32768",
-                temperature: 0.3, // Reduced temperature for more consistent output
-                max_tokens: 2048,
-            });
-
-            if (!completion.choices?.[0]?.message?.content) {
-                throw new Error('Empty response from Groq API');
-            }
-
-            analysis = completion.choices[0].message.content.trim();
-            
-            // Validate that the response starts and ends with curly braces
-            if (!analysis.startsWith('{') || !analysis.endsWith('}')) {
-                throw new Error('Invalid JSON structure in API response');
-            }
-
-            console.log('Analysis generated successfully');
-            console.log('Raw analysis:', analysis); // Log the raw response for debugging
-        } catch (groqError) {
-            console.error('Groq API error:', groqError);
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to analyze report',
-                details: groqError.message
-            });
-        }
-
-        // Parse the JSON response with error handling and validation
-        let parsedAnalysis;
-        try {
-            // First try to parse the JSON
-            parsedAnalysis = JSON.parse(analysis);
-
-            // Validate the required structure
-            const requiredFields = ['numericalData', 'keyFindings', 'recommendations', 'urgentConcerns', 'simplifiedSummary'];
-            const missingFields = requiredFields.filter(field => !(field in parsedAnalysis));
-
-            if (missingFields.length > 0) {
-                throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
-            }
-
-            // Ensure arrays are present even if empty and properly formatted
-            parsedAnalysis.numericalData = parsedAnalysis.numericalData || { metrics: [], suggestedVisualizations: [] };
-            parsedAnalysis.numericalData.metrics = Array.isArray(parsedAnalysis.numericalData.metrics) ? 
-                parsedAnalysis.numericalData.metrics.map(metric => ({
-                    name: String(metric.name || ''),
-                    value: String(metric.value || ''),
-                    unit: String(metric.unit || ''),
-                    normalRange: String(metric.normalRange || ''),
-                    status: ['normal', 'warning', 'critical'].includes(metric.status) ? metric.status : 'normal',
-                    trend: ['increasing', 'decreasing', 'stable'].includes(metric.trend) ? metric.trend : 'stable'
-                })) : [];
-
-            parsedAnalysis.numericalData.suggestedVisualizations = Array.isArray(parsedAnalysis.numericalData.suggestedVisualizations) ?
-                parsedAnalysis.numericalData.suggestedVisualizations.map(viz => ({
-                    type: ['graph', 'chart', 'gauge'].includes(viz.type) ? viz.type : 'chart',
-                    title: String(viz.title || ''),
-                    description: String(viz.description || '')
-                })) : [];
-
-            parsedAnalysis.keyFindings = Array.isArray(parsedAnalysis.keyFindings) ?
-                parsedAnalysis.keyFindings.map(finding => ({
-                    finding: String(finding.finding || ''),
-                    severity: ['normal', 'warning', 'critical'].includes(finding.severity) ? finding.severity : 'normal',
-                    category: String(finding.category || ''),
-                    explanation: String(finding.explanation || '')
-                })) : [];
-
-            parsedAnalysis.recommendations = Array.isArray(parsedAnalysis.recommendations) ?
-                parsedAnalysis.recommendations.map(rec => ({
-                    recommendation: String(rec.recommendation || ''),
-                    priority: ['high', 'medium', 'low'].includes(rec.priority) ? rec.priority : 'medium',
-                    timeframe: ['immediate', 'short-term', 'long-term'].includes(rec.timeframe) ? rec.timeframe : 'short-term',
-                    rationale: String(rec.rationale || '')
-                })) : [];
-
-            parsedAnalysis.urgentConcerns = Array.isArray(parsedAnalysis.urgentConcerns) ?
-                parsedAnalysis.urgentConcerns.map(concern => ({
-                    concern: String(concern.concern || ''),
-                    action: String(concern.action || ''),
-                    impact: String(concern.impact || '')
-                })) : [];
-
-            // Handle the medical terms specifically
-            parsedAnalysis.simplifiedSummary = parsedAnalysis.simplifiedSummary || {
-                mainPoints: [],
-                nextSteps: [],
-                medicalTerms: []
-            };
-            
-            parsedAnalysis.simplifiedSummary.mainPoints = Array.isArray(parsedAnalysis.simplifiedSummary.mainPoints) ?
-                parsedAnalysis.simplifiedSummary.mainPoints.map(point => String(point || '')) : [];
-            
-            parsedAnalysis.simplifiedSummary.nextSteps = Array.isArray(parsedAnalysis.simplifiedSummary.nextSteps) ?
-                parsedAnalysis.simplifiedSummary.nextSteps.map(step => String(step || '')) : [];
-
-            // Transform medical terms to ensure they're in the correct format
-            parsedAnalysis.simplifiedSummary.medicalTerms = Array.isArray(parsedAnalysis.simplifiedSummary.medicalTerms) ?
-                parsedAnalysis.simplifiedSummary.medicalTerms.map(term => {
-                    // If it's already in the correct format, return as is
-                    if (term && typeof term === 'object' && term.term && term.definition) {
-                        return {
-                            term: String(term.term),
-                            definition: String(term.definition)
-                        };
-                    }
-                    // If it's a string, create an object with empty definition
-                    if (typeof term === 'string') {
-                        return {
-                            term: String(term),
-                            definition: 'Definition not provided'
-                        };
-                    }
-                    // If it's invalid, return null (will be filtered out)
-                    return null;
-                }).filter(Boolean) : []; // Remove any null values
-
-            console.log('Analysis parsed and validated successfully');
-        } catch (parseError) {
-            console.error('JSON parsing or validation error:', parseError);
-            console.error('Raw analysis:', analysis);
-            
-            // Attempt to create a basic valid response
-            parsedAnalysis = {
-                numericalData: {
-                    metrics: [],
-                    suggestedVisualizations: []
-                },
-                keyFindings: [{
-                    finding: "Error processing report",
-                    severity: "warning",
-                    category: "System Error",
-                    explanation: "The system encountered an error while analyzing the report. Please try again or contact support."
-                }],
-                recommendations: [],
-                urgentConcerns: [],
-                simplifiedSummary: {
-                    mainPoints: ["Error in report analysis"],
-                    nextSteps: ["Please try uploading the report again"],
-                    medicalTerms: []
-                }
-            };
-
-            // Still return success but with the error structure
-            return res.status(200).json({
-                success: true,
-                text,
-                analysis: parsedAnalysis,
-                warning: 'Error parsing AI response, showing fallback analysis'
-            });
-        }
-
-        // Save to database with enhanced schema
+        // Save to database
         try {
             const report = new Report({
                 originalText: text,
@@ -398,7 +147,6 @@ If no data is found for a section, keep it as an empty array. Here's the report 
                 analysis: parsedAnalysis
             });
             await report.save();
-            console.log('Report saved to database');
         } catch (dbError) {
             console.error('Database save error:', dbError);
             // Continue without saving to database
@@ -411,12 +159,10 @@ If no data is found for a section, keep it as an empty array. Here's the report 
         });
 
     } catch (error) {
-        console.error('Unhandled error in analyze-report:', error);
+        console.error('Error processing report:', error);
         res.status(500).json({
-            success: false,
             error: 'Error processing report',
-            details: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            details: error.message
         });
     }
 });
