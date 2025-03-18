@@ -279,18 +279,81 @@ If no data is found for a section, keep it as an empty array. Here's the report 
                 throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
             }
 
-            // Ensure arrays are present even if empty
+            // Ensure arrays are present even if empty and properly formatted
             parsedAnalysis.numericalData = parsedAnalysis.numericalData || { metrics: [], suggestedVisualizations: [] };
-            parsedAnalysis.numericalData.metrics = parsedAnalysis.numericalData.metrics || [];
-            parsedAnalysis.numericalData.suggestedVisualizations = parsedAnalysis.numericalData.suggestedVisualizations || [];
-            parsedAnalysis.keyFindings = parsedAnalysis.keyFindings || [];
-            parsedAnalysis.recommendations = parsedAnalysis.recommendations || [];
-            parsedAnalysis.urgentConcerns = parsedAnalysis.urgentConcerns || [];
+            parsedAnalysis.numericalData.metrics = Array.isArray(parsedAnalysis.numericalData.metrics) ? 
+                parsedAnalysis.numericalData.metrics.map(metric => ({
+                    name: String(metric.name || ''),
+                    value: String(metric.value || ''),
+                    unit: String(metric.unit || ''),
+                    normalRange: String(metric.normalRange || ''),
+                    status: ['normal', 'warning', 'critical'].includes(metric.status) ? metric.status : 'normal',
+                    trend: ['increasing', 'decreasing', 'stable'].includes(metric.trend) ? metric.trend : 'stable'
+                })) : [];
+
+            parsedAnalysis.numericalData.suggestedVisualizations = Array.isArray(parsedAnalysis.numericalData.suggestedVisualizations) ?
+                parsedAnalysis.numericalData.suggestedVisualizations.map(viz => ({
+                    type: ['graph', 'chart', 'gauge'].includes(viz.type) ? viz.type : 'chart',
+                    title: String(viz.title || ''),
+                    description: String(viz.description || '')
+                })) : [];
+
+            parsedAnalysis.keyFindings = Array.isArray(parsedAnalysis.keyFindings) ?
+                parsedAnalysis.keyFindings.map(finding => ({
+                    finding: String(finding.finding || ''),
+                    severity: ['normal', 'warning', 'critical'].includes(finding.severity) ? finding.severity : 'normal',
+                    category: String(finding.category || ''),
+                    explanation: String(finding.explanation || '')
+                })) : [];
+
+            parsedAnalysis.recommendations = Array.isArray(parsedAnalysis.recommendations) ?
+                parsedAnalysis.recommendations.map(rec => ({
+                    recommendation: String(rec.recommendation || ''),
+                    priority: ['high', 'medium', 'low'].includes(rec.priority) ? rec.priority : 'medium',
+                    timeframe: ['immediate', 'short-term', 'long-term'].includes(rec.timeframe) ? rec.timeframe : 'short-term',
+                    rationale: String(rec.rationale || '')
+                })) : [];
+
+            parsedAnalysis.urgentConcerns = Array.isArray(parsedAnalysis.urgentConcerns) ?
+                parsedAnalysis.urgentConcerns.map(concern => ({
+                    concern: String(concern.concern || ''),
+                    action: String(concern.action || ''),
+                    impact: String(concern.impact || '')
+                })) : [];
+
+            // Handle the medical terms specifically
             parsedAnalysis.simplifiedSummary = parsedAnalysis.simplifiedSummary || {
                 mainPoints: [],
                 nextSteps: [],
                 medicalTerms: []
             };
+            
+            parsedAnalysis.simplifiedSummary.mainPoints = Array.isArray(parsedAnalysis.simplifiedSummary.mainPoints) ?
+                parsedAnalysis.simplifiedSummary.mainPoints.map(point => String(point || '')) : [];
+            
+            parsedAnalysis.simplifiedSummary.nextSteps = Array.isArray(parsedAnalysis.simplifiedSummary.nextSteps) ?
+                parsedAnalysis.simplifiedSummary.nextSteps.map(step => String(step || '')) : [];
+
+            // Transform medical terms to ensure they're in the correct format
+            parsedAnalysis.simplifiedSummary.medicalTerms = Array.isArray(parsedAnalysis.simplifiedSummary.medicalTerms) ?
+                parsedAnalysis.simplifiedSummary.medicalTerms.map(term => {
+                    // If it's already in the correct format, return as is
+                    if (term && typeof term === 'object' && term.term && term.definition) {
+                        return {
+                            term: String(term.term),
+                            definition: String(term.definition)
+                        };
+                    }
+                    // If it's a string, create an object with empty definition
+                    if (typeof term === 'string') {
+                        return {
+                            term: String(term),
+                            definition: 'Definition not provided'
+                        };
+                    }
+                    // If it's invalid, return null (will be filtered out)
+                    return null;
+                }).filter(Boolean) : []; // Remove any null values
 
             console.log('Analysis parsed and validated successfully');
         } catch (parseError) {
