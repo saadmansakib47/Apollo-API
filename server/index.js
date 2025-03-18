@@ -148,106 +148,184 @@ const Report = mongoose.model('Report', reportSchema);
 // Process report endpoint
 app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
     try {
+        // Validate file upload
         if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'No file uploaded' 
+            });
         }
 
-        // Initialize Tesseract worker
-        const worker = await createWorker();
+        console.log('File received:', {
+            filename: req.file.originalname,
+            size: req.file.size,
+            mimetype: req.file.mimetype
+        });
 
-        // Extract text from image
-        const { data: { text } } = await worker.recognize(req.file.buffer);
-        await worker.terminate();
+        // Initialize Tesseract worker with error handling
+        let worker;
+        try {
+            worker = await createWorker();
+            console.log('Tesseract worker initialized');
+        } catch (tesseractError) {
+            console.error('Tesseract initialization error:', tesseractError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to initialize text recognition',
+                details: tesseractError.message
+            });
+        }
 
-        // Generate analysis using Groq
-        const completion = await groq.chat.completions.create({
-            messages: [
-                {
-                    role: "system",
-                    content: `You are a medical expert AI assistant specialized in analyzing medical reports and presenting them in a visually appealing and easily understandable format. Your analysis should be detailed yet accessible to general users.
+        // Extract text from image with error handling
+        let text;
+        try {
+            const result = await worker.recognize(req.file.buffer);
+            text = result.data.text;
+            console.log('Text extracted successfully, length:', text.length);
+            await worker.terminate();
+        } catch (ocrError) {
+            console.error('OCR processing error:', ocrError);
+            await worker.terminate();
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to process image',
+                details: ocrError.message
+            });
+        }
 
-Key guidelines for your response:
-1. Extract and highlight any numerical data that could be visualized (lab results, measurements, etc.)
-2. Categorize findings by severity using a color-coding system:
-   - Critical/Urgent (Red): Immediate attention needed
-   - Warning (Yellow): Requires monitoring
-   - Normal/Good (Green): Within healthy ranges
-   - Informational (Blue): General information
-3. Use clear hierarchical organization
-4. Include trend analysis if temporal data is present
-5. Provide context for medical terms`
-                },
-                {
-                    role: "user",
-                    content: `Please analyze this medical report and provide a structured response in the following JSON-like format:
+        if (!text || text.trim().length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No text could be extracted from the image'
+            });
+        }
+
+        // Generate analysis using Groq with error handling
+        let analysis;
+        try {
+            const completion = await groq.chat.completions.create({
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are a medical expert AI assistant that MUST respond with valid JSON. Your task is to analyze medical reports and present them in a structured format.
+
+Key requirements:
+1. ALWAYS respond with properly formatted JSON
+2. Use the exact structure provided in the example
+3. Do not include any text outside the JSON structure
+4. Ensure all JSON values are properly quoted
+5. Keep responses concise to avoid token limits`
+                    },
+                    {
+                        role: "user",
+                        content: `Analyze this medical report and respond ONLY with a JSON object in this exact structure:
 
 {
     "numericalData": {
-        "metrics": [
-            {
-                "name": "Metric Name",
-                "value": "Numerical Value",
-                "unit": "Unit of Measurement",
-                "normalRange": "Reference Range",
-                "status": "normal|warning|critical",
-                "trend": "increasing|decreasing|stable" (if applicable)
-            }
-        ],
-        "suggestedVisualizations": [
-            {
-                "type": "graph|chart|gauge",
-                "title": "Visualization Title",
-                "description": "What this visualization shows"
-            }
-        ]
+        "metrics": [],
+        "suggestedVisualizations": []
     },
-    "keyFindings": [
-        {
-            "finding": "Finding description",
-            "severity": "normal|warning|critical",
-            "category": "Category name",
-            "explanation": "Simple explanation"
-        }
-    ],
-    "recommendations": [
-        {
-            "recommendation": "Action item",
-            "priority": "high|medium|low",
-            "timeframe": "immediate|short-term|long-term",
-            "rationale": "Why this is important"
-        }
-    ],
-    "urgentConcerns": [
-        {
-            "concern": "Description of urgent issue",
-            "action": "Required immediate action",
-            "impact": "Potential consequences"
-        }
-    ],
+    "keyFindings": [],
+    "recommendations": [],
+    "urgentConcerns": [],
     "simplifiedSummary": {
-        "mainPoints": ["Point 1", "Point 2"],
-        "nextSteps": ["Step 1", "Step 2"],
-        "medicalTerms": [
-            {
-                "term": "Medical term",
-                "definition": "Simple explanation"
-            }
-        ]
+        "mainPoints": [],
+        "nextSteps": [],
+        "medicalTerms": []
     }
 }
 
-Here's the report text: ${text}`
+If no data is found for a section, keep it as an empty array. Here's the report text: ${text}`
+                    }
+                ],
+                model: "mixtral-8x7b-32768",
+                temperature: 0.3, // Reduced temperature for more consistent output
+                max_tokens: 2048,
+            });
+
+            if (!completion.choices?.[0]?.message?.content) {
+                throw new Error('Empty response from Groq API');
+            }
+
+            analysis = completion.choices[0].message.content.trim();
+            
+            // Validate that the response starts and ends with curly braces
+            if (!analysis.startsWith('{') || !analysis.endsWith('}')) {
+                throw new Error('Invalid JSON structure in API response');
+            }
+
+            console.log('Analysis generated successfully');
+            console.log('Raw analysis:', analysis); // Log the raw response for debugging
+        } catch (groqError) {
+            console.error('Groq API error:', groqError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to analyze report',
+                details: groqError.message
+            });
+        }
+
+        // Parse the JSON response with error handling and validation
+        let parsedAnalysis;
+        try {
+            // First try to parse the JSON
+            parsedAnalysis = JSON.parse(analysis);
+
+            // Validate the required structure
+            const requiredFields = ['numericalData', 'keyFindings', 'recommendations', 'urgentConcerns', 'simplifiedSummary'];
+            const missingFields = requiredFields.filter(field => !(field in parsedAnalysis));
+
+            if (missingFields.length > 0) {
+                throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+            }
+
+            // Ensure arrays are present even if empty
+            parsedAnalysis.numericalData = parsedAnalysis.numericalData || { metrics: [], suggestedVisualizations: [] };
+            parsedAnalysis.numericalData.metrics = parsedAnalysis.numericalData.metrics || [];
+            parsedAnalysis.numericalData.suggestedVisualizations = parsedAnalysis.numericalData.suggestedVisualizations || [];
+            parsedAnalysis.keyFindings = parsedAnalysis.keyFindings || [];
+            parsedAnalysis.recommendations = parsedAnalysis.recommendations || [];
+            parsedAnalysis.urgentConcerns = parsedAnalysis.urgentConcerns || [];
+            parsedAnalysis.simplifiedSummary = parsedAnalysis.simplifiedSummary || {
+                mainPoints: [],
+                nextSteps: [],
+                medicalTerms: []
+            };
+
+            console.log('Analysis parsed and validated successfully');
+        } catch (parseError) {
+            console.error('JSON parsing or validation error:', parseError);
+            console.error('Raw analysis:', analysis);
+            
+            // Attempt to create a basic valid response
+            parsedAnalysis = {
+                numericalData: {
+                    metrics: [],
+                    suggestedVisualizations: []
+                },
+                keyFindings: [{
+                    finding: "Error processing report",
+                    severity: "warning",
+                    category: "System Error",
+                    explanation: "The system encountered an error while analyzing the report. Please try again or contact support."
+                }],
+                recommendations: [],
+                urgentConcerns: [],
+                simplifiedSummary: {
+                    mainPoints: ["Error in report analysis"],
+                    nextSteps: ["Please try uploading the report again"],
+                    medicalTerms: []
                 }
-            ],
-            model: "mixtral-8x7b-32768",
-            temperature: 0.5,
-            max_tokens: 2048,
-        });
+            };
 
-        const analysis = completion.choices[0]?.message?.content;
-
-        // Parse the JSON response
-        const parsedAnalysis = JSON.parse(analysis);
+            // Still return success but with the error structure
+            return res.status(200).json({
+                success: true,
+                text,
+                analysis: parsedAnalysis,
+                warning: 'Error parsing AI response, showing fallback analysis'
+            });
+        }
 
         // Save to database with enhanced schema
         try {
@@ -257,6 +335,7 @@ Here's the report text: ${text}`
                 analysis: parsedAnalysis
             });
             await report.save();
+            console.log('Report saved to database');
         } catch (dbError) {
             console.error('Database save error:', dbError);
             // Continue without saving to database
@@ -269,10 +348,12 @@ Here's the report text: ${text}`
         });
 
     } catch (error) {
-        console.error('Error processing report:', error);
+        console.error('Unhandled error in analyze-report:', error);
         res.status(500).json({
+            success: false,
             error: 'Error processing report',
-            details: error.message
+            details: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 });
