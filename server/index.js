@@ -81,10 +81,64 @@ const reportSchema = new mongoose.Schema({
     originalText: String,
     summary: String,
     analysis: {
-        keyFindings: [String],
-        recommendations: [String],
-        urgentConcerns: [String],
-        simplifiedExplanation: String
+        numericalData: {
+            metrics: [{
+                name: String,
+                value: String,
+                unit: String,
+                normalRange: String,
+                status: {
+                    type: String,
+                    enum: ['normal', 'warning', 'critical']
+                },
+                trend: {
+                    type: String,
+                    enum: ['increasing', 'decreasing', 'stable']
+                }
+            }],
+            suggestedVisualizations: [{
+                type: {
+                    type: String,
+                    enum: ['graph', 'chart', 'gauge']
+                },
+                title: String,
+                description: String
+            }]
+        },
+        keyFindings: [{
+            finding: String,
+            severity: {
+                type: String,
+                enum: ['normal', 'warning', 'critical']
+            },
+            category: String,
+            explanation: String
+        }],
+        recommendations: [{
+            recommendation: String,
+            priority: {
+                type: String,
+                enum: ['high', 'medium', 'low']
+            },
+            timeframe: {
+                type: String,
+                enum: ['immediate', 'short-term', 'long-term']
+            },
+            rationale: String
+        }],
+        urgentConcerns: [{
+            concern: String,
+            action: String,
+            impact: String
+        }],
+        simplifiedSummary: {
+            mainPoints: [String],
+            nextSteps: [String],
+            medicalTerms: [{
+                term: String,
+                definition: String
+            }]
+        }
     },
     createdAt: { type: Date, default: Date.now }
 });
@@ -110,36 +164,92 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
             messages: [
                 {
                     role: "system",
-                    content: "You are a medical expert AI assistant specialized in analyzing medical reports and explaining them in simple terms. Focus on providing clear, actionable insights and highlighting any concerning findings."
+                    content: `You are a medical expert AI assistant specialized in analyzing medical reports and presenting them in a visually appealing and easily understandable format. Your analysis should be detailed yet accessible to general users.
+
+Key guidelines for your response:
+1. Extract and highlight any numerical data that could be visualized (lab results, measurements, etc.)
+2. Categorize findings by severity using a color-coding system:
+   - Critical/Urgent (Red): Immediate attention needed
+   - Warning (Yellow): Requires monitoring
+   - Normal/Good (Green): Within healthy ranges
+   - Informational (Blue): General information
+3. Use clear hierarchical organization
+4. Include trend analysis if temporal data is present
+5. Provide context for medical terms`
                 },
                 {
                     role: "user",
-                    content: `Please analyze this medical report and provide a structured response with the following sections:
-          1. Key Findings (bullet points)
-          2. Recommendations (bullet points)
-          3. Urgent Concerns (if any)
-          4. Simplified Explanation (in layman's terms)
-          
-          Here's the report text: ${text}`
+                    content: `Please analyze this medical report and provide a structured response in the following JSON-like format:
+
+{
+    "numericalData": {
+        "metrics": [
+            {
+                "name": "Metric Name",
+                "value": "Numerical Value",
+                "unit": "Unit of Measurement",
+                "normalRange": "Reference Range",
+                "status": "normal|warning|critical",
+                "trend": "increasing|decreasing|stable" (if applicable)
+            }
+        ],
+        "suggestedVisualizations": [
+            {
+                "type": "graph|chart|gauge",
+                "title": "Visualization Title",
+                "description": "What this visualization shows"
+            }
+        ]
+    },
+    "keyFindings": [
+        {
+            "finding": "Finding description",
+            "severity": "normal|warning|critical",
+            "category": "Category name",
+            "explanation": "Simple explanation"
+        }
+    ],
+    "recommendations": [
+        {
+            "recommendation": "Action item",
+            "priority": "high|medium|low",
+            "timeframe": "immediate|short-term|long-term",
+            "rationale": "Why this is important"
+        }
+    ],
+    "urgentConcerns": [
+        {
+            "concern": "Description of urgent issue",
+            "action": "Required immediate action",
+            "impact": "Potential consequences"
+        }
+    ],
+    "simplifiedSummary": {
+        "mainPoints": ["Point 1", "Point 2"],
+        "nextSteps": ["Step 1", "Step 2"],
+        "medicalTerms": [
+            {
+                "term": "Medical term",
+                "definition": "Simple explanation"
+            }
+        ]
+    }
+}
+
+Here's the report text: ${text}`
                 }
             ],
             model: "mixtral-8x7b-32768",
             temperature: 0.5,
-            max_tokens: 1024,
+            max_tokens: 2048,
         });
 
         const analysis = completion.choices[0]?.message?.content;
 
-        // Parse the structured response
-        const sections = analysis.split('\n\n');
-        const parsedAnalysis = {
-            keyFindings: sections[0]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
-            recommendations: sections[1]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
-            urgentConcerns: sections[2]?.split('\n').filter(line => line.startsWith('-')).map(line => line.substring(2)),
-            simplifiedExplanation: sections[3]
-        };
+        // Parse the JSON response
+        const parsedAnalysis = JSON.parse(analysis);
 
-        // Save to database
+        // Save to database with enhanced schema
         try {
             const report = new Report({
                 originalText: text,
