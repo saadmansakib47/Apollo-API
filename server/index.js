@@ -123,7 +123,7 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
           Here's the report text: ${text}`
                 }
             ],
-            model: "mixtral-8x7b-32768",
+            model: "mistral-saba-24b llama-3.3-70b-versatile",
             temperature: 0.5,
             max_tokens: 1024,
         });
