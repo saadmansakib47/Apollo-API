@@ -123,7 +123,7 @@ app.post('/api/analyze-report', upload.single('report'), async (req, res) => {
           Here's the report text: ${text}`
                 }
             ],
-            model: "llama2-70b",
+            model: "llama-3.1-8b-instant",
             temperature: 0.5,
             max_tokens: 1024,
         });
@@ -207,7 +207,7 @@ app.post('/api/chat', async (req, res) => {
                     content: message
                 }
             ],
-            model: "llama2-70b",
+            model: "llama-3.1-8b-instant",
             temperature: 0.7,
             max_tokens: 1024,
         });
